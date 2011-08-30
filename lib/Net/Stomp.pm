@@ -113,7 +113,7 @@ sub connect {
     my $frame = Net::Stomp::Frame->new(
         { command => 'CONNECT', headers => $conf } );
     $self->send_frame($frame);
-    $frame = $self->receive_frame;
+    $frame = $self->receive_frame($conf);
 
     # Setting initial values for session id, as given from
     # the stomp server
@@ -247,23 +247,32 @@ sub ack {
 
 sub send_frame {
     my ( $self, $frame ) = @_;
+    # warn "send [" . $frame->as_string . "]\n";
     # see if we're connected before we try to syswrite()
     if (not defined $self->_connected) {
         $self->_reconnect;
         if (not defined $self->_connected) {
             warn q{wasn't connected; couldn't _reconnect()};
         }
-    }
-    my $written = $self->socket->syswrite( $frame->as_string );
-    if (($written||0) != length($frame->as_string)) {
-        warn 'only wrote '
-            . ($written||0)
-            . ' characters out of the '
-            . length($frame->as_string)
-            . ' character frame';
-        warn 'problem frame: <<' . $frame->as_string . '>>';
-    }
-    unless (defined $self->_connected) {
+    }    
+    # syswrite doesnt work on > 16384 messages, EPIC fail.
+	my $frame_octets = $frame->as_string;
+	my $frame_length = length($frame_octets);
+	my $frame_left = $frame_length;
+	my $offset = 0;
+	my $written;
+	do {
+		my $bufsize = ($frame_left > 4096) ? 4096 : $frame_left;
+		
+		$written = $self->socket->syswrite($frame_octets, $bufsize, $offset);
+		if( defined $written && $written > 0 ) {
+			$offset += $written;
+			$frame_left -= $written;
+		}
+	} until ( $offset >= $frame_length || ! defined($written) || $written <= 0  );
+
+    my $connected = $self->socket->connected;
+    unless (defined $connected) {
         $self->_reconnect;
         $self->send_frame($frame);
     }
@@ -312,7 +321,7 @@ sub _read_body {
     my ($self) = @_;
 
     my $h = $self->{_headers};
-    if ($h->{'content-length'}) {
+    if (defined $h->{'content-length'}) {
         if (length($self->{_framebuf}) >= $h->{'content-length'}) {
             $self->{_framebuf_changed} = 1;
             my $body = substr($self->{_framebuf},
@@ -669,6 +678,7 @@ Vigith Maurice <vigith@yahoo-inc.com>,
 Stephen Fralich <sjf4@uw.edu>,
 Squeeks <squeek@cpan.org>,
 Chisel Wright <chisel@chizography.net>,
+Raul Sobon <rauls@ac3dec.com>
 
 =head1 COPYRIGHT
 
